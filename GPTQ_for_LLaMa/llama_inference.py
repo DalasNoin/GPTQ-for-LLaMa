@@ -71,6 +71,28 @@ def load_quant(model, checkpoint, wbits, groupsize=-1, fused_mlp=True, eval=True
 
     return model
 
+class LlamaWrapper:
+    def __init__(self, model, checkpoint,wbits, groupsize=-1, fused_mlp=True):
+        self.model = load_quant(model=model, 
+                                checkpoint=checkpoint, 
+                                wbits=wbits, 
+                                groupsize=groupsize,
+                                fused_mlp=fused_mlp)
+        tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
+
+    def __call__(self, text):
+        input_ids = self.tokenizer.encode(text, return_tensors="pt").to(DEV)
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                input_ids,
+                do_sample=True,
+                min_length=10,
+                max_length=50,
+                top_p=0.95,
+                temperature=0.8,
+            )
+        return self.tokenizer.decode([el.item() for el in generated_ids[0]])
+
 
 if __name__ == '__main__':
 
@@ -82,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--load', type=str, default='', help='Load quantized model.')
 
     parser.add_argument('--text', type=str, help='input text')
+
 
     parser.add_argument('--min_length', type=int, default=10, help='The minimum length of the sequence to be generated.')
 
