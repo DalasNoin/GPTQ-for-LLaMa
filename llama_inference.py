@@ -86,17 +86,17 @@ class LlamaWrapper:
         else:
             self.model = get_llama(model)
             self.model.eval()
-        model.to(DEV)
+        self.model.to(DEV)
         self.tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
 
-    def __call__(self, text):
+    def __call__(self, text, max_length=50):
         input_ids = self.tokenizer.encode(text, return_tensors="pt").to(DEV)
         with torch.no_grad():
             generated_ids = self.model.generate(
                 input_ids,
                 do_sample=True,
                 min_length=10,
-                max_length=50,
+                max_length=max_length,
                 top_p=0.95,
                 temperature=0.8,
             )
@@ -159,7 +159,7 @@ if __name__ == '__main__':
         outputfile = args.outputfile
 
     # create the llama wrapper
-    llama_wrapper = LLamaWrapper(model=args.model,
+    llama_wrapper = LlamaWrapper(model=args.model,
                                  checkpoint=args.load,
                                  wbits=args.wbits,
                                  groupsize=args.groupsize,
