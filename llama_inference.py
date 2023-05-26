@@ -3,6 +3,7 @@ import argparse
 import torch
 import torch.nn as nn
 import quant
+import os
 
 from gptq import GPTQ
 from utils import find_layers, DEV, set_seed, get_wikitext2, get_ptb, get_c4, get_ptb_new, get_c4_new, get_loaders
@@ -71,6 +72,36 @@ def load_quant(model, checkpoint, wbits, groupsize=-1, fused_mlp=True, eval=True
 
     return model
 
+class LlamaWrapper:
+    def __init__(self, model, checkpoint, wbits, groupsize=-1, fused_mlp=True):
+        if type(checkpoint) is not str:
+            checkpoint = checkpoint.as_posix()
+
+        if checkpoint:
+            self.model = load_quant(model=model, 
+                                checkpoint=checkpoint, 
+                                wbits=wbits, 
+                                groupsize=groupsize,
+                                fused_mlp=fused_mlp)
+        else:
+            self.model = get_llama(model)
+            self.model.eval()
+        model.to(DEV)
+        self.tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
+
+    def __call__(self, text):
+        input_ids = self.tokenizer.encode(text, return_tensors="pt").to(DEV)
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                input_ids,
+                do_sample=True,
+                min_length=10,
+                max_length=50,
+                top_p=0.95,
+                temperature=0.8,
+            )
+        return self.tokenizer.decode([el.item() for el in generated_ids[0]])
+
 
 if __name__ == '__main__':
 
@@ -79,9 +110,15 @@ if __name__ == '__main__':
     parser.add_argument('model', type=str, help='llama model to load')
     parser.add_argument('--wbits', type=int, default=16, choices=[2, 3, 4, 8, 16], help='#bits to use for quantization; use 16 for evaluating base model.')
     parser.add_argument('--groupsize', type=int, default=-1, help='Groupsize to use for quantization; default uses full row.')
-    parser.add_argument('--load', type=str, default='', help='Load quantized model.')
+    parser.add_argument('--load', type=str, default='', help='Load quantized model checkpoint.')
 
-    parser.add_argument('--text', type=str, help='input text')
+    parser.add_argument('--text', type=str, help='input text', default='')
+    # as an alternative take a textfile as input
+    parser.add_argument('--textfile', type=str, help='input textfile')
+    # offer an output file to write to
+    parser.add_argument('--outputfile', type=str, help='output textfile')
+    # offer a n parameter for the number of completions
+    parser.add_argument('--n', type=int, default=1, help='number of completions to generate')
 
     parser.add_argument('--min_length', type=int, default=10, help='The minimum length of the sequence to be generated.')
 
@@ -103,26 +140,39 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if type(args.load) is not str:
-        args.load = args.load.as_posix()
 
-    if args.load:
-        model = load_quant(args.model, args.load, args.wbits, args.groupsize, fused_mlp=args.fused_mlp)
+
+    # check if textfile is given or text
+    if args.text:
+        text = args.text
+    elif args.textfile:
+        # check if textfile exists
+        if not os.path.isfile(args.textfile):
+            raise ValueError('Textfile does not exist.')
+        with open(args.textfile, 'r') as f:
+            text = f.read()
     else:
-        model = get_llama(args.model)
-        model.eval()
+        raise ValueError('No text or textfile given.')
+    
+    # check if outputfile is given
+    if args.outputfile:
+        outputfile = args.outputfile
 
-    model.to(DEV)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
-    input_ids = tokenizer.encode(args.text, return_tensors="pt").to(DEV)
-
-    with torch.no_grad():
-        generated_ids = model.generate(
-            input_ids,
-            do_sample=True,
-            min_length=args.min_length,
-            max_length=args.max_length,
-            top_p=args.top_p,
-            temperature=args.temperature,
-        )
-    print(tokenizer.decode([el.item() for el in generated_ids[0]]))
+    # create the llama wrapper
+    llama_wrapper = LLamaWrapper(model=args.model,
+                                 checkpoint=args.load,
+                                 wbits=args.wbits,
+                                 groupsize=args.groupsize,
+                                 fused_mlp=args.fused_mlp)
+    
+    # generate the text
+    for i in range(args.n):
+        generated_text = llama_wrapper(text)
+        # only use text after the input text
+        generated_text = generated_text[len(text):]
+        print(generated_text)
+        if args.outputfile:
+            with open(outputfile, 'a') as f:
+                f.write(generated_text)
+                f.write('\n')
+    
